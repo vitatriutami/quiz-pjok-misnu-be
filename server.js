@@ -1,4 +1,4 @@
-// server.js - Server Node.js & Database SQLite Milik Sendiri
+// server.js - Server Node.js & Database SQLite
 import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
@@ -7,24 +7,37 @@ import cors from 'cors';
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
 
-app.use(cors());
-app.use(express.json());
-
-// 1. Inisialisasi Database SQLite Milik Sendiri (File: quiz_data.db)
-const db = new sqlite3.Database('./quiz_data.db', (err) => {
-  if (err) console.error("Gagal konek DB:", err.message);
-  else console.log("Terhubung ke Database SQLite milik sendiri.");
+// Inisialisasi Socket.io dengan CORS terbuka
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
 });
 
-// Buat Tabel Nilai jika belum ada
+app.use(cors({ origin: '*' }));
+app.use(express.json());
+
+// 1. Inisialisasi Database SQLite
+// Catatan: Menggunakan ':memory:' agar aman dari batasan penyimpanan sistem Fly.io
+const db = new sqlite3.Database(':memory:', (err) => {
+  if (err) console.error("Gagal konek DB:", err.message);
+  else console.log("Terhubung ke Database SQLite (In-Memory).");
+});
+
+// Buat Tabel Nilai
 db.run(`CREATE TABLE IF NOT EXISTS nilai_siswa (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     nama TEXT NOT NULL,
     skor INTEGER NOT NULL,
     waktu DATETIME DEFAULT CURRENT_TIMESTAMP
 )`);
+
+// Endpoint Utama Check (Health Check)
+app.get('/', (req, res) => {
+  res.send('Server Quiz PJOK Backend Aktif!');
+});
 
 // 2. API Endpoint: Siswa Kirim Nilai
 app.post('/api/simpan-nilai', (req, res) => {
@@ -35,9 +48,14 @@ app.post('/api/simpan-nilai', (req, res) => {
   db.run(sql, [nama, skor], function (err) {
     if (err) return res.status(500).json({ error: err.message });
 
-    const dataBaru = { id: this.lastID, nama, skor, waktu: new Date().toLocaleString('id-ID') };
+    const dataBaru = {
+      id: this.lastID,
+      nama,
+      skor,
+      waktu: new Date().toLocaleString('id-ID')
+    };
 
-    // KIRIM DATA REAL-TIME KE GADGET GURU YANG SEDANG TERHUBUNG VIA WEBSOCKET
+    // Broadcast real-time ke semua client
     io.emit('nilai_baru', dataBaru);
 
     res.json({ status: "sukses", data: dataBaru });
@@ -55,17 +73,11 @@ app.get('/api/rekap-nilai', (req, res) => {
 
 // 4. Koneksi WebSocket Real-Time
 io.on('connection', (socket) => {
-  console.log('Gadget terhubung ke Real-time Server');
+  console.log('Gadget terhubung via WebSocket:', socket.id);
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`🚀 Server berjalan di http://localhost:${PORT}`);
-}).on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.log(`⚠️ Port ${PORT} sedang dipakai, mencoba port ${Number(PORT) + 1}...`);
-    server.listen(Number(PORT) + 1);
-  } else {
-    console.error("Server error:", err);
-  }
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on port ${PORT}`);
 });
