@@ -1,0 +1,17 @@
+{
+  "name": "server-kuis-pjok",
+  "version": "1.0.0",
+  "description": "Backend Server SQLite & Socket.io Kuis PJOK MIS NU Palangka Raya",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "bun run server.js",
+    "dev": "bun --watch server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5",
+    "sqlite3": "^5.1.7"
+  }
+}
