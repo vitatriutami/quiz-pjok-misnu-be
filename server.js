@@ -58,7 +58,7 @@ io.on('connection', (socket) => {
   console.log('Gadget terhubung ke Real-time Server');
 });
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`🚀 Server berjalan di http://localhost:${PORT}`);
 }).on('error', (err) => {
