@@ -1,83 +1,240 @@
-// server.js - Server Node.js & Database SQLite
 import express from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
-import sqlite3 from 'sqlite3';
+import pg from 'pg';
 import cors from 'cors';
+
+const { Pool } = pg;
 
 const app = express();
 const server = http.createServer(app);
 
-// Inisialisasi Socket.io dengan CORS terbuka
 const io = new Server(server, {
   cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
+    origin: '*',
+    methods: ['GET', 'POST']
   }
 });
 
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
-// 1. Inisialisasi Database SQLite
-// Catatan: Menggunakan ':memory:' agar aman dari batasan penyimpanan sistem Fly.io
-const db = new sqlite3.Database(':memory:', (err) => {
-  if (err) console.error("Gagal konek DB:", err.message);
-  else console.log("Terhubung ke Database SQLite (In-Memory).");
+// ================================
+// PostgreSQL
+// ================================
+
+// ================================
+// Debug DATABASE_URL (tanpa password)
+// ================================
+
+try {
+  const dbUrl = new URL(process.env.DATABASE_URL);
+
+  console.log('🔎 Database configuration:');
+  console.log('   User    :', dbUrl.username);
+  console.log('   Host    :', dbUrl.hostname);
+  console.log('   Port    :', dbUrl.port);
+  console.log('   Database:', dbUrl.pathname.slice(1));
+} catch (err) {
+  console.error('❌ DATABASE_URL tidak valid:', err.message);
+}
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
 });
 
-// Buat Tabel Nilai
-db.run(`CREATE TABLE IF NOT EXISTS nilai_siswa (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    nama TEXT NOT NULL,
-    skor INTEGER NOT NULL,
-    waktu DATETIME DEFAULT CURRENT_TIMESTAMP
-)`);
+pool.on('error', (err) => {
+  console.error('Unexpected PostgreSQL error:', err);
+});
 
-// Endpoint Utama Check (Health Check)
+// ================================
+// Inisialisasi Database
+// ================================
+
+async function initializeDatabase() {
+  await pool.query(`
+        CREATE TABLE IF NOT EXISTS nilai_siswa (
+            id SERIAL PRIMARY KEY,
+            nama TEXT NOT NULL,
+            skor INTEGER NOT NULL,
+            correct INTEGER NOT NULL,
+            total INTEGER NOT NULL,
+            date TEXT,
+            timestamp BIGINT,
+            waktu TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    `);
+
+  console.log('✅ Terhubung ke PostgreSQL.');
+  console.log('✅ Tabel nilai_siswa siap digunakan.');
+}
+
+// ================================
+// Route utama
+// ================================
+
 app.get('/', (req, res) => {
   res.send('Server Quiz PJOK Backend Aktif!');
 });
 
-// 2. API Endpoint: Siswa Kirim Nilai
-app.post('/api/simpan-nilai', (req, res) => {
-  const { nama, skor } = req.body;
-  if (!nama) return res.status(400).json({ error: "Nama wajib diisi" });
+// ================================
+// Simpan nilai siswa
+// ================================
 
-  const sql = `INSERT INTO nilai_siswa (nama, skor) VALUES (?, ?)`;
-  db.run(sql, [nama, skor], function (err) {
-    if (err) return res.status(500).json({ error: err.message });
+app.post('/api/simpan-nilai', async (req, res) => {
+  const {
+    nama,
+    skor,
+    correct,
+    total,
+    date,
+    timestamp
+  } = req.body;
 
-    const dataBaru = {
-      id: this.lastID,
-      nama,
-      skor,
-      waktu: new Date().toLocaleString('id-ID')
-    };
+  // Validasi data
+  if (!nama) {
+    return res.status(400).json({
+      error: 'Nama wajib diisi'
+    });
+  }
 
-    // Broadcast real-time ke semua client
+  if (skor === undefined || skor === null) {
+    return res.status(400).json({
+      error: 'Skor wajib diisi'
+    });
+  }
+
+  if (correct === undefined || correct === null) {
+    return res.status(400).json({
+      error: 'Jumlah jawaban benar wajib diisi'
+    });
+  }
+
+  if (total === undefined || total === null) {
+    return res.status(400).json({
+      error: 'Total soal wajib diisi'
+    });
+  }
+
+  try {
+    const result = await pool.query(
+      `
+            INSERT INTO nilai_siswa
+            (nama, skor, correct, total, date, timestamp)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING *
+            `,
+      [
+        nama,
+        skor,
+        correct,
+        total,
+        date || null,
+        timestamp || null
+      ]
+    );
+
+    const dataBaru = result.rows[0];
+
+    // Kirim data baru ke semua client melalui Socket.IO
     io.emit('nilai_baru', dataBaru);
 
-    res.json({ status: "sukses", data: dataBaru });
-  });
+    console.log('✅ Nilai baru tersimpan:', dataBaru);
+
+    res.json({
+      status: 'sukses',
+      data: dataBaru
+    });
+
+  } catch (err) {
+    console.error(
+      '❌ Gagal menyimpan nilai:',
+      err.message
+    );
+
+    res.status(500).json({
+      error: err.message
+    });
+  }
 });
 
-// 3. API Endpoint: Guru Ambil Semua Nilai
-app.get('/api/rekap-nilai', (req, res) => {
-  const sql = `SELECT * FROM nilai_siswa ORDER BY id DESC`;
-  db.all(sql, [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(rows);
-  });
+// ================================
+// Ambil rekap nilai
+// ================================
+
+app.get('/api/rekap-nilai', async (req, res) => {
+  try {
+    const result = await pool.query(`
+            SELECT
+                id,
+                nama,
+                skor,
+                correct,
+                total,
+                date,
+                timestamp,
+                waktu
+            FROM nilai_siswa
+            ORDER BY id DESC
+        `);
+
+    res.json(result.rows);
+
+  } catch (err) {
+    console.error(
+      '❌ Gagal mengambil data nilai:',
+      err.message
+    );
+
+    res.status(500).json({
+      error: err.message
+    });
+  }
 });
 
-// 4. Koneksi WebSocket Real-Time
+// ================================
+// Socket.IO
+// ================================
+
 io.on('connection', (socket) => {
-  console.log('Gadget terhubung via WebSocket:', socket.id);
+  console.log(
+    '🔌 Gadget terhubung via WebSocket:',
+    socket.id
+  );
+
+  socket.on('disconnect', () => {
+    console.log(
+      '🔌 Gadget terputus:',
+      socket.id
+    );
+  });
 });
+
+// ================================
+// Jalankan Server
+// ================================
 
 const PORT = process.env.PORT || 3000;
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server running on port ${PORT}`);
-});
+async function startServer() {
+  try {
+    await initializeDatabase();
+
+    server.listen(PORT, '0.0.0.0', () => {
+      console.log(
+        `🚀 Server running on port ${PORT}`
+      );
+    });
+
+  } catch (err) {
+    console.error(
+      '❌ Server gagal dijalankan karena database tidak siap.'
+    );
+
+    console.error(err.message);
+
+    process.exit(1);
+  }
+}
+
+startServer();
